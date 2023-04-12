@@ -167,6 +167,9 @@ fn main() {
         }
     };
 
+    // ensure that out_dir exists
+    create_dir_all(out_dir.to_owned()).unwrap();
+
     loop {
         // ensure file is (still) readable
         match reader.has_data_left() {
