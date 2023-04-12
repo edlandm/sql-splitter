@@ -13,6 +13,7 @@ use clap::Parser;
 use regex::Regex;
 use std::fs::{ File, create_dir_all };
 use std::io::{ BufRead, BufReader, BufWriter, Write };
+use std::path::Path;
 use encoding_rs::WINDOWS_1252;
 use encoding_rs_io::DecodeReaderBytesBuilder;
 
@@ -123,6 +124,11 @@ fn main() {
     let verbose           = &cli.verbose;
 
     let mut reader: Box<dyn BufRead> = if let Some(in_file) = cli.in_file {
+        // check if file exists
+        if !Path::new(&in_file).exists() {
+            eprintln!("File does not exist: {}", in_file);
+            std::process::exit(1);
+        }
         let file = File::open(in_file).unwrap();
         if *windows_1252 {
             Box::new(BufReader::new(DecodeReaderBytesBuilder::new()
