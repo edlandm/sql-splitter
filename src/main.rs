@@ -155,6 +155,9 @@ fn main() {
         }
     };
 
+    // ensure that out_dir exists
+    create_dir_all(out_dir.to_owned()).unwrap();
+
     let mut line = String::new();
     let mut db_use_statement = String::new();
     let mut writer: Option<BufWriter<File>> = None;
@@ -166,9 +169,6 @@ fn main() {
             format!("{}/{}.{}.sql", dir, obj.schema, obj.name)
         }
     };
-
-    // ensure that out_dir exists
-    create_dir_all(out_dir.to_owned()).unwrap();
 
     loop {
         // ensure file is (still) readable
