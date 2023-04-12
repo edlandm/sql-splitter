@@ -115,9 +115,15 @@ impl TryFrom<&str> for DatabaseObject {
 
 fn main() {
     let cli = Cli::parse();
+
     let mut out_dir: String  = cli.out_dir.to_owned();
-    if out_dir.len() > 0 && out_dir.chars().last().unwrap() == '/' {
-        out_dir.truncate(out_dir.len() - 1);
+    if out_dir.len() > 0 {
+        // if out_dir was given and ends in a slash, remove the slash
+        match out_dir.chars().last().expect("out_dir was empty") {
+            '/'  => { out_dir.truncate(out_dir.len() - 1) },
+            '\\' => { out_dir.truncate(out_dir.len() - 1) },
+            _    => (),
+        };
     }
     let only_object_names = &cli.only_object_names;
     let windows_1252      = &cli.windows_1252;
