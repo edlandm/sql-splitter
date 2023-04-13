@@ -13,9 +13,10 @@ use clap::Parser;
 use regex::Regex;
 use std::fs::{ File, create_dir_all };
 use std::io::{ BufRead, BufReader, BufWriter, Write };
-use std::path::Path;
+use std::path::{ Path, PathBuf };
 use encoding_rs::WINDOWS_1252;
 use encoding_rs_io::DecodeReaderBytesBuilder;
+use zip::ZipWriter;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -28,6 +29,8 @@ struct Cli {
     verbose: bool,
     #[arg(short = 'w', long = "windows-1252", required = false, default_value_t = false, help = "specify that input files are using windows-1252 encoding instead of UTF-8")]
     windows_1252: bool,
+    #[arg(short = 'z', long = "zip", required = false, help = "path to zip file to create and place results")]
+    zip: Option<String>,
     // remaining arguments are file-paths
     #[arg(required = false, help = "File(s) to process")]
     in_file: Option<String>,
@@ -127,6 +130,21 @@ fn main() {
             _    => (),
         };
     }
+
+    let mut zip_path: Option<PathBuf> = None;
+    if let Some(zp) = cli.zip {
+        // ensure that zp does not exist
+        if Path::new(&zp).exists() {
+            eprintln!("File already exists: {}", &zp);
+            std::process::exit(1);
+        }
+        zip_path = if !zp.ends_with(".zip") {
+            Some(Path::new(&zp).with_extension("zip"))
+        } else {
+            Some(Path::new(&zp).to_path_buf())
+        }
+    }
+
     let only_object_names = &cli.only_object_names;
     let windows_1252      = &cli.windows_1252;
     let verbose           = &cli.verbose;
@@ -160,9 +178,16 @@ fn main() {
     // ensure that out_dir exists
     create_dir_all(out_dir.to_owned()).expect("Failed to create out_dir");
 
+    // create zip_file and writer
+    let zip_writer: Option<ZipWriter<File>> = if let Some(zp) = zip_path.as_ref() {
+        let zipfile = File::create(zp).expect("Failed to create zip file");
+        Some(ZipWriter::new(zipfile))
+    } else {
+        None
+    };
+
     let mut line = String::new();
     let mut db_use_statement = String::new();
-    let mut writer: Option<BufWriter<File>> = None;
 
     let make_path = |dir: String, obj: DatabaseObject| -> String {
         if *only_object_names || obj.schema.is_empty() {
@@ -172,63 +197,145 @@ fn main() {
         }
     };
 
-    loop {
-        // ensure file is (still) readable
-        match reader.has_data_left() {
-            Ok(false) => {
-                return;
-            },
-            Err(e) => {
+    // read lines in in_file and split into separate files
+    // these two branches are very similar, but one of them writes the files
+    // directly into a zip file
+    if let Some(mut zip_writer) = zip_writer {
+        // write to zip file
+        let zip_parent_dir: String = zip_path.expect("zip_path was None")
+            .as_path()
+            .file_stem().expect("file should have stem")
+            .to_os_string()
+            .into_string().expect("failed to convert os string to string");
+        zip_writer.add_directory(
+            &zip_parent_dir,
+            zip::write::FileOptions::default())
+            .expect("failed to add parent directory to zip file");
+        let mut writer = BufWriter::new(zip_writer);
+        loop {
+            // ensure file is (still) readable
+            // exit if nothing left to read or if there was an error
+            match reader.has_data_left() {
+                Ok(false) => {
+                    writer.flush().expect("Error writing to zip file");
+                    let zw = writer.get_mut();
+                    zw.finish().expect("Error finishing zip file");
+                    break;
+                },
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                    std::process::exit(1);
+                },
+                _ => {}
+            }
+
+            // read a line
+            if let Err(e) = reader.read_line(&mut line) {
                 eprintln!("{:?}", e);
                 std::process::exit(1);
-            },
-            _ => {}
+            }
+
+            // keep track of which database the following objects belong to
+            if line.starts_with("USE ") {
+                // get line containing USE, and the following line with 'GO'
+                db_use_statement.clear();
+                reader.read_line(&mut line).expect("Error reading line");
+                db_use_statement.push_str(line.as_str());
+            } else if line.starts_with("/****** Object:") {
+                if let Ok(obj) = DatabaseObject::try_from(line.as_str()) {
+                    let dir: String = [
+                        &zip_parent_dir,
+                        obj.object_type.to_string().as_str(),
+                        ].join("/");
+
+                    let path = make_path(dir.to_owned(), obj);
+                    if *verbose {
+                        println!("creating {:?}", path);
+                    }
+
+                    let zw = writer.get_mut();
+                    zw.start_file(path.as_str(), Default::default())
+                        .expect("Error adding file to zip file");
+
+                    writer.write(db_use_statement.as_bytes())
+                        .expect("Error writing db_use_statement to zip file");
+                    writer.write(line.as_bytes())
+                        .expect("Error writing line to zip file");
+                }
+            } else {
+                writer.write(line.as_bytes())
+                    .expect("Error writing line to zip file");
+            }
+            line.clear();
         }
-
-        // read a line
-        if let Err(e) = reader.read_line(&mut line) {
-            eprintln!("{:?}", e);
-            std::process::exit(1);
-        }
-
-        // keep track of which database the following objects belong to
-        if line.starts_with("USE ") {
-            // get line containing USE, and the following line with 'GO'
-            db_use_statement.clear();
-            reader.read_line(&mut line).expect("Error reading line");
-            db_use_statement.push_str(line.as_str());
-        } else if line.starts_with("/****** Object:") {
-            if let Ok(obj) = DatabaseObject::try_from(line.as_str()) {
-                let dir = [
-                    out_dir.as_str(),
-                    obj.object_type.to_string().as_str(),
-                    ].join("/");
-                create_dir_all(dir.to_owned()).unwrap();
-
-                if let Some(w) = writer.as_mut() {
+    } else {
+        // write to individual files
+        let mut writer: Option<BufWriter<File>> = None;
+        loop {
+            // ensure file is (still) readable
+            // exit if nothing left to read or if there was an error
+            match reader.has_data_left() {
+                Ok(false) => {
+                    if let Some(mut w) = writer {
                         w.flush().expect("failed to flush writer");
-                }
-
-                let path = make_path(dir.to_owned(), obj);
-                if *verbose {
-                    println!("creating {:?}", path);
-                }
-
-                let file = File::create(path)
-                    .expect("failed to create file");
-                let mut _writer = BufWriter::new(file);
-                _writer.write(db_use_statement.as_bytes())
-                    .expect("Error writing db_use_statement to file");
-                _writer.write(line.as_bytes())
-                    .expect("Error writing line to file");
-                writer = Some(_writer);
+                    }
+                    break;
+                },
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                    std::process::exit(1);
+                },
+                _ => {}
             }
-        } else {
-            if let Some(w) = writer.as_mut() {
-                w.write(line.as_bytes())
-                    .expect("Error writing line to file");
+
+            // read a line
+            if let Err(e) = reader.read_line(&mut line) {
+                eprintln!("{:?}", e);
+                std::process::exit(1);
             }
+
+            // keep track of which database the following objects belong to
+            if line.starts_with("USE ") {
+                // get line containing USE, and the following line with 'GO'
+                db_use_statement.clear();
+                reader.read_line(&mut line).expect("Error reading line");
+                db_use_statement.push_str(line.as_str());
+            } else if line.starts_with("/****** Object:") {
+                if let Ok(obj) = DatabaseObject::try_from(line.as_str()) {
+                    let dir = [
+                        out_dir.as_str(),
+                        obj.object_type.to_string().as_str(),
+                        ].join("/");
+
+                    // ensure that dir exists
+                    create_dir_all(dir.to_owned())
+                        .expect("failed to create dir");
+
+                    if let Some(w) = writer.as_mut() {
+                        w.flush().expect("failed to flush writer");
+                    }
+
+                    let path = make_path(dir.to_owned(), obj);
+                    if *verbose {
+                        println!("creating {:?}", path);
+                    }
+
+                    let file = File::create(path)
+                        .expect("failed to create file");
+                    let mut _writer: BufWriter<File> = BufWriter::new(file);
+                    _writer.write(db_use_statement.as_bytes())
+                        .expect("Error writing db_use_statement to file");
+                    _writer.write(line.as_bytes())
+                        .expect("Error writing line to file");
+                    writer = Some(_writer);
+                }
+            } else {
+                if let Some(w) = writer.as_mut() {
+                    w.write(line.as_bytes())
+                        .expect("Error writing line to file");
+                }
+            }
+            line.clear();
         }
-        line.clear();
     }
 }
