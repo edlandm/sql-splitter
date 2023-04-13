@@ -15,6 +15,7 @@ Options:
   -n, --only_names         Exclude schema-name from filenames
   -v, --verbose            Verbose output
   -w, --windows-1252       specify that input files are using windows-1252 encoding instead of UTF-8
+  -z, --zip <ZIP>          path to zip file to create and place results
   -h, --help               Print help
   -V, --version            Print version
 ```
