@@ -81,9 +81,11 @@ struct DatabaseObject {
 impl TryFrom<&str> for DatabaseObject {
     type Error = ();
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let pattern = Regex::new(r"^/\*+\s+Object:\s+(\w+)\s+\[(\S+)\]\.\[(\S+)\]").unwrap();
+        let pattern = Regex::new(r"^/\*+\s+Object:\s+(\w+)\s+\[(\S+)\]\.\[(\S+)\]")
+            .expect("error compiling DatabaseObject regular expression");
         if let Some(caps) = pattern.captures(s) {
-            let object_type = match caps.get(1).unwrap().as_str() {
+            let cap = caps.get(1).expect("Error retrieving capture group");
+            let object_type = match cap.as_str() {
                 "Database"            => Some(ObjectType::Database),
                 "DatabaseRole"        => Some(ObjectType::DatabaseRole),
                 "DdlTrigger"          => Some(ObjectType::DdlTrigger),
@@ -135,7 +137,7 @@ fn main() {
             eprintln!("File does not exist: {}", in_file);
             std::process::exit(1);
         }
-        let file = File::open(in_file).unwrap();
+        let file = File::open(in_file).expect("Failed to open in_file");
         if *windows_1252 {
             Box::new(BufReader::new(DecodeReaderBytesBuilder::new()
                 .encoding(Some(WINDOWS_1252))
@@ -156,7 +158,7 @@ fn main() {
     };
 
     // ensure that out_dir exists
-    create_dir_all(out_dir.to_owned()).unwrap();
+    create_dir_all(out_dir.to_owned()).expect("Failed to create out_dir");
 
     let mut line = String::new();
     let mut db_use_statement = String::new();
@@ -193,7 +195,7 @@ fn main() {
         if line.starts_with("USE ") {
             // get line containing USE, and the following line with 'GO'
             db_use_statement.clear();
-            reader.read_line(&mut line).unwrap();
+            reader.read_line(&mut line).expect("Error reading line");
             db_use_statement.push_str(line.as_str());
         } else if line.starts_with("/****** Object:") {
             if let Ok(obj) = DatabaseObject::try_from(line.as_str()) {
@@ -204,7 +206,7 @@ fn main() {
                 create_dir_all(dir.to_owned()).unwrap();
 
                 if let Some(w) = writer.as_mut() {
-                    w.flush().unwrap();
+                        w.flush().expect("failed to flush writer");
                 }
 
                 let path = make_path(dir.to_owned(), obj);
@@ -212,15 +214,19 @@ fn main() {
                     println!("creating {:?}", path);
                 }
 
-                let file = File::create(path).unwrap();
+                let file = File::create(path)
+                    .expect("failed to create file");
                 let mut _writer = BufWriter::new(file);
-                _writer.write(db_use_statement.as_bytes()).unwrap();
-                _writer.write(line.as_bytes()).unwrap();
+                _writer.write(db_use_statement.as_bytes())
+                    .expect("Error writing db_use_statement to file");
+                _writer.write(line.as_bytes())
+                    .expect("Error writing line to file");
                 writer = Some(_writer);
             }
         } else {
             if let Some(w) = writer.as_mut() {
-                w.write(line.as_bytes()).unwrap();
+                w.write(line.as_bytes())
+                    .expect("Error writing line to file");
             }
         }
         line.clear();
